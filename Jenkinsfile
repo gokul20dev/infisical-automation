@@ -38,7 +38,18 @@ EOF
             }
         }
 
-        stage('Ensure Compose is Running') {
+        stage('Clean Previous Run') {
+            steps {
+                sh '''
+                echo "Cleaning old containers..."
+
+                docker compose down || true
+                docker rm -f infisical-postgres-new || true
+                '''
+            }
+        }
+
+        stage('Start Compose') {
             steps {
                 sh '''
                 echo "Starting docker-compose..."
@@ -76,8 +87,6 @@ EOF
                 withCredentials([string(credentialsId: 'db-pass', variable: 'DB_PASS')]) {
                     sh '''
                     echo "Starting NEW DB..."
-
-                    docker rm -f infisical-postgres-new || true
 
                     docker run -d \
                     --name infisical-postgres-new \
