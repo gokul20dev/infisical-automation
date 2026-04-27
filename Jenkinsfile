@@ -158,27 +158,15 @@ stage('Debug Key') {
         }
 
         stage('Switch App to New DB') {
-            steps {
-                withCredentials([
-                    string(credentialsId: 'db-pass', variable: 'DB_PASS'),
-                    string(credentialsId: 'auth-secret', variable: 'AUTH_SECRET'),
-                    string(credentialsId: 'enc-key', variable: 'ENC_KEY')
-                ]) {
-                    sh '''
-                    echo "Switching application to NEW DB..."
+    steps {
+        sh '''
+        echo "Switching application to NEW DB..."
 
-                    docker compose down
-
-                    DB_CONNECTION_URI=postgresql://postgres:${DB_PASS}@infisical-postgres-new:5432/infisical \
-                    REDIS_URL=redis://redis:6379 \
-                    AUTH_SECRET=${AUTH_SECRET} \
-                    ENCRYPTION_KEY=${ENC_KEY} \
-                    docker compose up -d
-                    '''
-                }
-            }
-        }
+        docker compose down
+        docker compose up -d
+        '''
     }
+}
 
     post {
         success {
