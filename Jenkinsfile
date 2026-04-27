@@ -4,190 +4,129 @@ pipeline {
     environment {
         DB_NAME = "infisical"
         DB_USER = "postgres"
+        DB_PASS = "postgres"
+
         OLD_DB = "infisical-postgres"
         NEW_DB = "infisical-postgres-new"
+
         BACKUP_FILE = "backup.dump"
+
+        APP_NAME = "infisical-new"
+        PORT = "8001"
     }
 
     stages {
 
-        stage('Checkout Code') {
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('Create .env securely') {
-            steps {
-                withCredentials([
-                    string(credentialsId: 'db-pass', variable: 'DB_PASS'),
-                    string(credentialsId: 'auth-secret', variable: 'AUTH_SECRET'),
-                    string(credentialsId: 'enc-key', variable: 'ENC_KEY')
-                ]) {
-                    sh '''
-                    echo "Creating .env securely..."
-
-                    cat > .env <<EOF
-DB_CONNECTION_URI=postgresql://postgres:${DB_PASS}@postgres:5432/infisical
-REDIS_URL=redis://redis:6379
-AUTH_SECRET=${AUTH_SECRET}
-ENCRYPTION_KEY=${ENC_KEY}
-EOF
-                    '''
-                }
-            }
-        }
-stage('Debug Key') {
-    steps {
-        withCredentials([
-            string(credentialsId: 'enc-key', variable: 'ENC_KEY')
-        ]) {
-            sh '''
-            echo "🔍 Checking ENCRYPTION_KEY length..."
-            echo ${#ENC_KEY}
-            '''
-        }
-    }
-}
-        stage('Clean Previous Run') {
-    steps {
-        sh '''
-        echo "Cleaning ALL old containers..."
-
-        # Stop compose services
-        docker compose down || true
-
-        # Remove ALL conflicting containers
-        docker rm -f infisical-postgres-new || true
-        docker rm -f infisical-redis || true
-        docker rm -f infisical-postgres || true
-        docker rm -f infisical || true
-        '''
-    }
-}
-
-        stage('Start Compose') {
-            steps {
-                sh '''
-                echo "Starting docker-compose..."
-
-                docker compose up -d
-
-                echo "Waiting for OLD DB..."
-
-                until docker exec infisical-postgres pg_isready -U postgres
-                do
-                  echo "Waiting for OLD DB..."
-                  sleep 2
-                done
-
-                echo "OLD DB is ready ✅"
-                '''
-            }
-        }
-
         stage('Take Backup') {
             steps {
                 sh '''
-                echo "Taking backup..."
+                echo "📦 Taking backup..."
 
-                docker exec infisical-postgres \
-                pg_dump -U postgres -d infisical -F c > backup.dump
+                docker exec ${OLD_DB} \
+                pg_dump -U ${DB_USER} -d ${DB_NAME} -F c > ${BACKUP_FILE}
 
-                ls -lh backup.dump
+                ls -lh ${BACKUP_FILE}
                 '''
             }
         }
 
         stage('Start New DB') {
             steps {
-                withCredentials([string(credentialsId: 'db-pass', variable: 'DB_PASS')]) {
-                    sh '''
-                    echo "Starting NEW DB..."
+                sh '''
+                echo "🚀 Starting new Postgres..."
 
-                    docker run -d \
-                    --name infisical-postgres-new \
-                    --network $(docker network ls --format '{{.Name}}' | grep infisical | head -1) \
-                    -e POSTGRES_PASSWORD=${DB_PASS} \
-                    postgres:15
-                    '''
-                }
+                docker rm -f ${NEW_DB} || true
+
+                docker run -d \
+                --name ${NEW_DB} \
+                -e POSTGRES_PASSWORD=${DB_PASS} \
+                -p 5433:5432 \
+                postgres:15
+                '''
             }
         }
 
-        stage('Prepare New DB') {
+        stage('Create DB') {
             steps {
                 sh '''
-                echo "Waiting for NEW DB..."
+                echo "🛠 Creating database..."
 
-                until docker exec infisical-postgres-new pg_isready -U postgres
-                do
-                  sleep 2
-                done
+                sleep 5
 
-                docker exec infisical-postgres-new \
-                psql -U postgres -c "CREATE DATABASE infisical;"
+                docker exec ${NEW_DB} \
+                psql -U ${DB_USER} -c "CREATE DATABASE ${DB_NAME};"
                 '''
             }
         }
 
         stage('Restore Backup') {
-    steps {
-        sh '''
-        echo "Restoring backup properly..."
-
-        # Copy backup into container
-        docker cp backup.dump infisical-postgres-new:/backup.dump
-
-        # Restore inside container
-        docker exec infisical-postgres-new \
-        pg_restore -U postgres -d infisical /backup.dump
-        '''
-    }
-}
-
-        stage('Verify Restore') {
             steps {
                 sh '''
-                echo "Verifying tables..."
+                echo "♻️ Restoring backup..."
 
-                docker exec infisical-postgres-new \
-                psql -U postgres -d infisical -c "\\dt"
+                docker cp ${BACKUP_FILE} ${NEW_DB}:/backup.dump
+
+                docker exec ${NEW_DB} \
+                pg_restore -U ${DB_USER} -d ${DB_NAME} /backup.dump
                 '''
             }
         }
-        stage('Fix KMS Conflict') {
-    steps {
-        sh '''
-        echo "Fixing ALL encryption conflicts..."
 
-        docker exec infisical-postgres-new psql -U postgres -d infisical -c "
-        TRUNCATE internal_kms CASCADE;
-        TRUNCATE kms_root_config CASCADE;
-        TRUNCATE user_encryption_keys CASCADE;
-        TRUNCATE kms_keys CASCADE;
-        "
-        '''
-    }
-}
+        stage('Verify Data') {
+            steps {
+                sh '''
+                echo "🔍 Verifying data..."
 
-        stage('Switch App to New DB') {
-    steps {
-        sh '''
-        echo "Switching application to NEW DB..."
+                docker exec ${NEW_DB} \
+                psql -U ${DB_USER} -d ${DB_NAME} -c "SELECT email FROM users LIMIT 5;"
+                '''
+            }
+        }
 
-        docker compose down
-        docker compose up -d
-        '''
+        stage('Start New Infisical App') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'auth-secret', variable: 'AUTH_SECRET'),
+                    string(credentialsId: 'enc-key', variable: 'ENC_KEY')
+                ]) {
+                    sh '''
+                    echo "🚀 Starting new Infisical app..."
+
+                    docker rm -f ${APP_NAME} || true
+
+                    docker run -d \
+                    --name ${APP_NAME} \
+                    -p ${PORT}:8080 \
+                    --network infisical_default \
+                    -e DB_CONNECTION_URI=postgresql://postgres:${DB_PASS}@${NEW_DB}:5432/${DB_NAME} \
+                    -e REDIS_URL=redis://infisical-redis:6379 \
+                    -e AUTH_SECRET=${AUTH_SECRET} \
+                    -e ENCRYPTION_KEY=${ENC_KEY} \
+                    infisical/infisical:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                sh '''
+                echo "🌐 Checking app..."
+
+                sleep 10
+
+                curl -f http://localhost:${PORT} || exit 1
+                '''
+            }
+        }
     }
-}
-    }
+
     post {
         success {
-            echo "✅ Secure deployment successful"
+            echo "✅ Backup + Restore + New App SUCCESS"
         }
         failure {
-            echo "❌ Deployment failed - old system untouched"
+            echo "❌ Pipeline failed"
         }
     }
 }
