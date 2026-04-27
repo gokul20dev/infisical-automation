@@ -13,6 +13,8 @@ pipeline {
 
         APP_NAME = "infisical-new"
         PORT = "8001"
+
+        NETWORK = "infisical_default"
     }
 
     stages {
@@ -30,6 +32,17 @@ pipeline {
             }
         }
 
+        stage('Ensure Network Exists') {
+            steps {
+                sh '''
+                echo "🌐 Ensuring network exists..."
+
+                docker network inspect ${NETWORK} >/dev/null 2>&1 || \
+                docker network create ${NETWORK}
+                '''
+            }
+        }
+
         stage('Start New DB') {
             steps {
                 sh '''
@@ -39,9 +52,23 @@ pipeline {
 
                 docker run -d \
                 --name ${NEW_DB} \
+                --network ${NETWORK} \
                 -e POSTGRES_PASSWORD=${DB_PASS} \
-                -p 5433:5432 \
                 postgres:15
+                '''
+            }
+        }
+
+        stage('Wait for DB') {
+            steps {
+                sh '''
+                echo "⏳ Waiting for DB..."
+
+                until docker exec ${NEW_DB} pg_isready -U ${DB_USER}
+                do
+                  echo "Waiting for DB..."
+                  sleep 2
+                done
                 '''
             }
         }
@@ -50,8 +77,6 @@ pipeline {
             steps {
                 sh '''
                 echo "🛠 Creating database..."
-
-                sleep 5
 
                 docker exec ${NEW_DB} \
                 psql -U ${DB_USER} -c "CREATE DATABASE ${DB_NAME};"
@@ -78,28 +103,19 @@ pipeline {
                 echo "🔍 Verifying data..."
 
                 docker exec ${NEW_DB} \
-                psql -U ${DB_USER} -d ${DB_NAME} -c "SELECT email FROM users LIMIT 5;"
+                psql -U ${DB_USER} -d ${DB_NAME} -c "SELECT count(*) FROM users;"
                 '''
             }
         }
 
-        stage('Ensure Network Exists') {
-    steps {
-        sh '''
-        echo "🌐 Checking network..."
-
-        docker network inspect infisical_default >/dev/null 2>&1 || \
-        docker network create infisical_default
-        '''
-    }
-}
         stage('Connect Redis to Network') {
-    steps {
-        sh '''
-        docker network connect infisical_default infisical-redis || true
-        '''
-    }
-}
+            steps {
+                sh '''
+                docker network connect ${NETWORK} infisical-redis || true
+                '''
+            }
+        }
+
         stage('Start New Infisical App') {
             steps {
                 withCredentials([
@@ -114,7 +130,7 @@ pipeline {
                     docker run -d \
                     --name ${APP_NAME} \
                     -p ${PORT}:8080 \
-                    --network infisical_default \
+                    --network ${NETWORK} \
                     -e DB_CONNECTION_URI=postgresql://postgres:${DB_PASS}@${NEW_DB}:5432/${DB_NAME} \
                     -e REDIS_URL=redis://infisical-redis:6379 \
                     -e AUTH_SECRET=${AUTH_SECRET} \
@@ -130,9 +146,13 @@ pipeline {
                 sh '''
                 echo "🌐 Checking app..."
 
-                sleep 10
+                for i in {1..10}; do
+                  curl -f http://localhost:${PORT} && exit 0
+                  echo "Waiting for app..."
+                  sleep 5
+                done
 
-                curl -f http://localhost:${PORT} || exit 1
+                exit 1
                 '''
             }
         }
