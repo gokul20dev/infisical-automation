@@ -55,21 +55,22 @@ pipeline {
         }
 
         stage('Start New App (8001)') {
-            steps {
-                sh '''
-                echo "🚀 Starting new app on 8001..."
-                docker rm -f $APP_NEW || true
+    steps {
+        sh '''
+        echo "🚀 Starting new app on 8001..."
+        docker rm -f infisical-new || true
 
-                docker run -d \
-                  --name $APP_NEW \
-                  --network $NETWORK \
-                  -p 8001:8080 \
-                  -e DB_CONNECTION_URI="postgresql://postgres:postgres@$DB_NEW:5432/infisical" \
-                  -e REDIS_URL="redis://$REDIS:6379" \
-                  infisical/infisical:latest
-                '''
-            }
-        }
+        docker run -d \
+          --name infisical-new \
+          --network infisical_default \
+          -p 8001:8080 \
+          -e AUTH_SECRET="testauth123" \
+          -e DB_CONNECTION_URI="postgresql://postgres:postgres@infisical-postgres-new:5432/infisical" \
+          -e REDIS_URL="redis://infisical-redis:6379" \
+          infisical/infisical:latest
+        '''
+    }
+}
 
         stage('Health Check') {
             steps {
