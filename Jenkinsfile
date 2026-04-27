@@ -157,6 +157,37 @@ pipeline {
             }
         }
     }
+    stage('Switch to Production (8000)') {
+    steps {
+        withCredentials([
+            string(credentialsId: 'auth-secret', variable: 'AUTH_SECRET'),
+            string(credentialsId: 'enc-key', variable: 'ENC_KEY')
+        ]) {
+            sh '''
+            echo "🔁 Switching NEW → PRODUCTION (8000)..."
+
+            # Stop old app
+            docker rm -f infisical || true
+
+            # Stop temp new app
+            docker rm -f infisical-new || true
+
+            # Start NEW as MAIN on 8000
+            docker run -d \
+            --name infisical \
+            -p 8000:8080 \
+            --network infisical_default \
+            -e DB_CONNECTION_URI=postgresql://postgres:${DB_PASS}@${NEW_DB}:5432/${DB_NAME} \
+            -e REDIS_URL=redis://infisical-redis:6379 \
+            -e AUTH_SECRET=${AUTH_SECRET} \
+            -e ENCRYPTION_KEY=${ENC_KEY} \
+            infisical/infisical:latest
+
+            echo "✅ Switched to production (8000)"
+            '''
+        }
+    }
+}
 
     post {
         success {
