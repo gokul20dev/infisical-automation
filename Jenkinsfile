@@ -83,6 +83,16 @@ pipeline {
             }
         }
 
+        stage('Ensure Network Exists') {
+    steps {
+        sh '''
+        echo "🌐 Checking network..."
+
+        docker network inspect infisical_default >/dev/null 2>&1 || \
+        docker network create infisical_default
+        '''
+    }
+}
         stage('Start New Infisical App') {
             steps {
                 withCredentials([
