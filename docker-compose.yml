@@ -22,8 +22,11 @@ services:
     depends_on:
       - postgres
       - redis
-    env_file:
-      - .env
+    environment:
+  DB_CONNECTION_URI: ${DB_CONNECTION_URI}
+  REDIS_URL: ${REDIS_URL}
+  AUTH_SECRET: ${AUTH_SECRET}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY}
     ports:
       - "8000:8080"
 
