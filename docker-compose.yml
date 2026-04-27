@@ -16,17 +16,17 @@ services:
     restart: always
 
   infisical:
-    image: infisical/infisical:latest   # 👈 properly indented
+    image: infisical/infisical:latest
     container_name: infisical
     restart: always
     depends_on:
       - postgres
       - redis
     environment:
-  DB_CONNECTION_URI: ${DB_CONNECTION_URI}
-  REDIS_URL: ${REDIS_URL}
-  AUTH_SECRET: ${AUTH_SECRET}
-  ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      DB_CONNECTION_URI: ${DB_CONNECTION_URI}
+      REDIS_URL: ${REDIS_URL}
+      AUTH_SECRET: ${AUTH_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
     ports:
       - "8000:8080"
 
