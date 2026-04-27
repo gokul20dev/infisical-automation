@@ -2,20 +2,12 @@ pipeline {
     agent any
 
     environment {
-        DB_NAME = "infisical"
-        DB_USER = "postgres"
-        DB_PASS = "postgres"
-
-        // 🔥 IMPORTANT FIX (use working DB)
-        OLD_DB = "infisical-postgres-new"
-        NEW_DB = "infisical-postgres-temp"
-
-        BACKUP_FILE = "backup.dump"
-
-        APP_NAME = "infisical-new"
-        PORT = "8001"
-
+        DB_CONTAINER_OLD = "infisical-postgres"
+        DB_CONTAINER_NEW = "infisical-postgres-new"
+        APP_CONTAINER_OLD = "infisical"
+        APP_CONTAINER_NEW = "infisical-new"
         NETWORK = "infisical_default"
+        BACKUP_FILE = "backup.dump"
     }
 
     stages {
@@ -23,21 +15,8 @@ pipeline {
         stage('Take Backup') {
             steps {
                 sh '''
-                echo "📦 Taking backup..."
-
-                docker exec ${OLD_DB} \
-                pg_dump -U ${DB_USER} -d ${DB_NAME} -F c > ${BACKUP_FILE}
-
-                ls -lh ${BACKUP_FILE}
-                '''
-            }
-        }
-
-        stage('Ensure Network Exists') {
-            steps {
-                sh '''
-                docker network inspect ${NETWORK} >/dev/null 2>&1 || \
-                docker network create ${NETWORK}
+                echo "📦 Taking DB backup..."
+                docker exec $DB_CONTAINER_OLD pg_dump -U postgres -d infisical -F c > $BACKUP_FILE
                 '''
             }
         }
@@ -45,13 +24,16 @@ pipeline {
         stage('Start New DB') {
             steps {
                 sh '''
-                docker rm -f ${NEW_DB} || true
+                echo "🚀 Starting new DB..."
+                docker rm -f $DB_CONTAINER_NEW || true
 
                 docker run -d \
-                --name ${NEW_DB} \
-                --network ${NETWORK} \
-                -e POSTGRES_PASSWORD=${DB_PASS} \
-                postgres:15
+                  --name $DB_CONTAINER_NEW \
+                  --network $NETWORK \
+                  -e POSTGRES_USER=postgres \
+                  -e POSTGRES_PASSWORD=postgres \
+                  -e POSTGRES_DB=infisical \
+                  postgres:15
                 '''
             }
         }
@@ -59,19 +41,8 @@ pipeline {
         stage('Wait for DB') {
             steps {
                 sh '''
-                until docker exec ${NEW_DB} pg_isready -U ${DB_USER}
-                do
-                  sleep 2
-                done
-                '''
-            }
-        }
-
-        stage('Create DB') {
-            steps {
-                sh '''
-                docker exec ${NEW_DB} \
-                psql -U ${DB_USER} -c "CREATE DATABASE ${DB_NAME};"
+                echo "⏳ Waiting for DB..."
+                sleep 10
                 '''
             }
         }
@@ -79,100 +50,84 @@ pipeline {
         stage('Restore Backup') {
             steps {
                 sh '''
-                docker cp ${BACKUP_FILE} ${NEW_DB}:/backup.dump
-
-                docker exec ${NEW_DB} \
-                pg_restore -U ${DB_USER} -d ${DB_NAME} /backup.dump
+                echo "📥 Restoring backup..."
+                cat $BACKUP_FILE | docker exec -i $DB_CONTAINER_NEW pg_restore -U postgres -d infisical
                 '''
             }
         }
 
-        stage('Verify Data') {
+        stage('Start New App (8001)') {
             steps {
                 sh '''
-                docker exec ${NEW_DB} \
-                psql -U ${DB_USER} -d ${DB_NAME} -c "SELECT count(*) FROM users;"
+                echo "🚀 Starting new app on port 8001..."
+                docker rm -f $APP_CONTAINER_NEW || true
+
+                docker run -d \
+                  --name $APP_CONTAINER_NEW \
+                  --network $NETWORK \
+                  -p 8001:8080 \
+                  -e DB_CONNECTION_URI="postgresql://postgres:postgres@$DB_CONTAINER_NEW:5432/infisical" \
+                  -e REDIS_URL="redis://redis:6379" \
+                  infisical/infisical:latest
                 '''
-            }
-        }
-
-        stage('Connect Redis to Network') {
-            steps {
-                sh '''
-                docker network connect ${NETWORK} infisical-redis || true
-                '''
-            }
-        }
-
-        stage('Start New Infisical App') {
-            steps {
-                withCredentials([
-                    string(credentialsId: 'auth-secret', variable: 'AUTH_SECRET'),
-                    string(credentialsId: 'enc-key', variable: 'ENC_KEY')
-                ]) {
-                    sh '''
-                    docker rm -f ${APP_NAME} || true
-
-                    docker run -d \
-                    --name ${APP_NAME} \
-                    -p ${PORT}:8080 \
-                    --network ${NETWORK} \
-                    -e DB_CONNECTION_URI=postgresql://postgres:${DB_PASS}@${NEW_DB}:5432/${DB_NAME} \
-                    -e REDIS_URL=redis://infisical-redis:6379 \
-                    -e AUTH_SECRET=${AUTH_SECRET} \
-                    -e ENCRYPTION_KEY=${ENC_KEY} \
-                    infisical/infisical:latest
-                    '''
-                }
             }
         }
 
         stage('Health Check') {
             steps {
                 sh '''
-                for i in {1..15}; do
-                  curl -f http://localhost:${PORT} && exit 0
-                  sleep 5
-                done
-                exit 1
+                echo "❤️ Checking app health..."
+                sleep 10
+
+                STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001)
+
+                if [ "$STATUS" != "200" ]; then
+                  echo "❌ Health check failed"
+                  exit 1
+                fi
+
+                echo "✅ App is healthy"
                 '''
             }
         }
 
-        // ✅ FIXED — now INSIDE stages block
-        stage('Switch to Production (8000)') {
+        stage('Switch Traffic to 8000') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'auth-secret', variable: 'AUTH_SECRET'),
-                    string(credentialsId: 'enc-key', variable: 'ENC_KEY')
-                ]) {
-                    sh '''
-                    echo "🔁 Switching to production..."
+                sh '''
+                echo "🔁 Switching traffic..."
 
-                    docker rm -f infisical || true
-                    docker rm -f infisical-new || true
+                docker stop $APP_CONTAINER_OLD || true
+                docker rm $APP_CONTAINER_OLD || true
 
-                    docker run -d \
-                    --name infisical \
-                    -p 8000:8080 \
-                    --network ${NETWORK} \
-                    -e DB_CONNECTION_URI=postgresql://postgres:${DB_PASS}@${NEW_DB}:5432/${DB_NAME} \
-                    -e REDIS_URL=redis://infisical-redis:6379 \
-                    -e AUTH_SECRET=${AUTH_SECRET} \
-                    -e ENCRYPTION_KEY=${ENC_KEY} \
-                    infisical/infisical:latest
-                    '''
-                }
+                docker stop $APP_CONTAINER_NEW
+                docker rm $APP_CONTAINER_NEW
+
+                docker run -d \
+                  --name $APP_CONTAINER_OLD \
+                  --network $NETWORK \
+                  -p 8000:8080 \
+                  -e DB_CONNECTION_URI="postgresql://postgres:postgres@$DB_CONTAINER_NEW:5432/infisical" \
+                  -e REDIS_URL="redis://redis:6379" \
+                  infisical/infisical:latest
+                '''
             }
         }
     }
 
     post {
         success {
-            echo "✅ SUCCESS"
+            echo "✅ Deployment Successful"
         }
+
         failure {
-            echo "❌ FAILED"
+            echo "❌ Deployment Failed - Rolling back..."
+
+            sh '''
+            docker stop infisical-new || true
+            docker rm infisical-new || true
+
+            echo "🔙 Rollback complete (old app still running)"
+            '''
         }
     }
 }
