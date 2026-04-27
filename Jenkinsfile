@@ -121,15 +121,19 @@ EOF
         }
 
         stage('Restore Backup') {
-            steps {
-                sh '''
-                echo "Restoring backup..."
+    steps {
+        sh '''
+        echo "Restoring backup properly..."
 
-                cat backup.dump | docker exec -i infisical-postgres-new \
-                pg_restore -U postgres -d infisical
-                '''
-            }
-        }
+        # Copy backup into container
+        docker cp backup.dump infisical-postgres-new:/backup.dump
+
+        # Restore inside container
+        docker exec infisical-postgres-new \
+        pg_restore -U postgres -d infisical /backup.dump
+        '''
+    }
+}
 
         stage('Verify Restore') {
             steps {
