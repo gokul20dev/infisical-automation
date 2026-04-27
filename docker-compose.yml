@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: infisical-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: infisical
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: infisical-redis
+    restart: always
+
+  infisical:
+    image: infisical/infisical:latest   # 👈 properly indented
+    container_name: infisical
+    restart: always
+    depends_on:
+      - postgres
+      - redis
+    env_file:
+      - .env
+    ports:
+      - "8000:8080"
+
+volumes:
+  postgres_data:
