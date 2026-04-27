@@ -93,6 +93,13 @@ pipeline {
         '''
     }
 }
+        stage('Connect Redis to Network') {
+    steps {
+        sh '''
+        docker network connect infisical_default infisical-redis || true
+        '''
+    }
+}
         stage('Start New Infisical App') {
             steps {
                 withCredentials([
