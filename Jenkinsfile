@@ -159,11 +159,13 @@ stage('Debug Key') {
         stage('Fix KMS Conflict') {
     steps {
         sh '''
-        echo "Fixing KMS encryption conflict..."
+        echo "Fixing ALL encryption conflicts..."
 
         docker exec infisical-postgres-new psql -U postgres -d infisical -c "
         TRUNCATE internal_kms CASCADE;
         TRUNCATE kms_root_config CASCADE;
+        TRUNCATE user_encryption_keys CASCADE;
+        TRUNCATE kms_keys CASCADE;
         "
         '''
     }
