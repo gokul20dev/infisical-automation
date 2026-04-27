@@ -37,7 +37,18 @@ EOF
                 }
             }
         }
-
+stage('Debug Key') {
+    steps {
+        withCredentials([
+            string(credentialsId: 'enc-key', variable: 'ENC_KEY')
+        ]) {
+            sh '''
+            echo "🔍 Checking ENCRYPTION_KEY length..."
+            echo ${#ENC_KEY}
+            '''
+        }
+    }
+}
         stage('Clean Previous Run') {
     steps {
         sh '''
