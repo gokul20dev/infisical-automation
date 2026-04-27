@@ -39,15 +39,21 @@ EOF
         }
 
         stage('Clean Previous Run') {
-            steps {
-                sh '''
-                echo "Cleaning old containers..."
+    steps {
+        sh '''
+        echo "Cleaning ALL old containers..."
 
-                docker compose down || true
-                docker rm -f infisical-postgres-new || true
-                '''
-            }
-        }
+        # Stop compose services
+        docker compose down || true
+
+        # Remove ALL conflicting containers
+        docker rm -f infisical-postgres-new || true
+        docker rm -f infisical-redis || true
+        docker rm -f infisical-postgres || true
+        docker rm -f infisical || true
+        '''
+    }
+}
 
         stage('Start Compose') {
             steps {
