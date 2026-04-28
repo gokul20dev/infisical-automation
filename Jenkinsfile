@@ -41,49 +41,64 @@ EOF
             }
         }
 
-        // ── 3. Verify OLD stack is running ───────────────────────────────────
-        // Containers were started via docker run (not compose), so we must NOT
-        // call "docker compose up" — it would conflict on the existing names.
-        // We simply verify the old DB container is up and accepting connections.
-        stage('Verify Old Stack Running') {
+        // ── 3. Detect ACTIVE DB and verify it is running ─────────────────────
+        // After the first migration the live DB is infisical-postgres-new, not
+        // infisical-postgres. We read the DB_CONNECTION_URI from the running
+        // infisical container so every build backs up from the RIGHT database.
+        stage('Detect Active DB') {
             steps {
                 sh '''
-                echo "Verifying OLD stack is already running..."
+                echo "Detecting which DB the running infisical app is using..."
 
-                # Confirm the container exists and is running
-                docker inspect --format "{{.State.Running}}" ${OLD_CONTAINER} | grep -q "true" || \
-                    { echo "❌ ${OLD_CONTAINER} is not running! Start the old stack first."; exit 1; }
+                # Extract hostname from DB_CONNECTION_URI env var of infisical container
+                # URI format: postgresql://user:pass@HOSTNAME:5432/db
+                ACTIVE_DB=$(docker inspect infisical \
+                    --format "{{range .Config.Env}}{{println .}}{{end}}" \
+                    | grep "^DB_CONNECTION_URI=" \
+                    | sed "s|.*@\([^:]*\):.*|\1|")
 
-                echo "Container ${OLD_CONTAINER} is running ✅"
+                if [ -z "$ACTIVE_DB" ]; then
+                    echo "Could not detect active DB — falling back to ${OLD_CONTAINER}"
+                    ACTIVE_DB=${OLD_CONTAINER}
+                fi
 
-                echo "Waiting for OLD DB to be ready..."
+                echo "Active DB container: $ACTIVE_DB"
+
+                # Persist for later stages
+                echo $ACTIVE_DB > /tmp/infisical_active_db.txt
+
+                # Verify it is running and ready
+                docker inspect --format "{{.State.Running}}" $ACTIVE_DB | grep -q "true" || \
+                    { echo "❌ $ACTIVE_DB is not running!"; exit 1; }
+
                 for i in $(seq 1 30); do
-                    docker exec ${OLD_CONTAINER} pg_isready -U postgres && break
+                    docker exec $ACTIVE_DB pg_isready -U postgres && break
                     echo "  still waiting... ($i)"
                     sleep 3
                 done
 
-                docker exec ${OLD_CONTAINER} pg_isready -U postgres || \
-                    { echo "❌ OLD DB never became ready"; exit 1; }
+                docker exec $ACTIVE_DB pg_isready -U postgres || \
+                    { echo "❌ Active DB never became ready"; exit 1; }
 
-                echo "OLD DB is ready ✅"
+                echo "Active DB is ready ✅"
                 '''
             }
         }
 
-        // ── 4. Backup OLD DB ─────────────────────────────────────────────────
-        // pg_dump runs INSIDE the old container; we copy the file OUT via docker cp.
+        // ── 4. Backup ACTIVE DB ──────────────────────────────────────────────
+        // Back up whichever DB the running infisical is currently using.
         stage('Take Backup') {
             steps {
                 sh '''
-                echo "Taking backup from ${OLD_CONTAINER}..."
+                ACTIVE_DB=$(cat /tmp/infisical_active_db.txt)
+                echo "Taking backup from $ACTIVE_DB..."
 
                 # Run pg_dump inside the container, write to a known path inside it
-                docker exec ${OLD_CONTAINER} \
+                docker exec $ACTIVE_DB \
                     pg_dump -U postgres -d infisical -F c -f /tmp/backup.dump
 
                 # Copy the dump file from the container to the Jenkins workspace
-                docker cp ${OLD_CONTAINER}:/tmp/backup.dump ${BACKUP_FILE}
+                docker cp $ACTIVE_DB:/tmp/backup.dump ${BACKUP_FILE}
 
                 ls -lh ${BACKUP_FILE}
                 echo "Backup complete ✅"
