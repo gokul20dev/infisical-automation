@@ -195,10 +195,15 @@ EOF
 
                     echo ".env updated ✅"
 
-                    echo "Restarting ONLY the infisical app container (zero downtime)..."
-                    # --no-deps: don't touch postgres/redis
-                    # --force-recreate: picks up the new .env
-                    docker compose up -d --no-deps --force-recreate infisical
+                    echo "Stopping old infisical app container..."
+                    # The old container was started outside compose, so we must
+                    # remove it manually before compose can recreate it.
+                    docker stop infisical || true
+                    docker rm   infisical || true
+
+                    echo "Starting infisical app pointed at NEW DB..."
+                    # --no-deps: leaves postgres/redis untouched
+                    docker compose up -d --no-deps infisical
 
                     echo "App container recreated ✅"
                     '''
