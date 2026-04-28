@@ -173,9 +173,9 @@ EOF
             }
         }
 
-        // ── 9. Switch App to NEW DB (zero downtime) ───────────────────────────
-        // We rewrite .env with the new host, then force-recreate ONLY the
-        // infisical service. postgres + redis containers keep running.
+        // ── 9. Switch App to NEW DB ───────────────────────────────────────────
+        // Use docker run -e directly (matches manual approach from docs).
+        // docker compose up was causing crash-loops due to .env substitution issues.
         stage('Switch App to New DB') {
             steps {
                 withCredentials([
@@ -184,28 +184,22 @@ EOF
                     string(credentialsId: 'enc-key',     variable: 'ENC_KEY')
                 ]) {
                     sh '''
-                    echo "Updating .env to point at NEW DB (${NEW_CONTAINER})..."
-
-                    cat > .env <<EOF
-DB_CONNECTION_URI=postgresql://postgres:${DB_PASS}@${NEW_CONTAINER}:5432/infisical
-REDIS_URL=redis://redis:6379
-AUTH_SECRET=${AUTH_SECRET}
-ENCRYPTION_KEY=${ENC_KEY}
-EOF
-
-                    echo ".env updated ✅"
-
                     echo "Stopping old infisical app container..."
-                    # The old container was started outside compose, so we must
-                    # remove it manually before compose can recreate it.
                     docker stop infisical || true
                     docker rm   infisical || true
 
-                    echo "Starting infisical app pointed at NEW DB..."
-                    # --no-deps: leaves postgres/redis untouched
-                    docker compose up -d --no-deps infisical
+                    echo "Starting infisical app pointed at NEW DB on port 8000..."
+                    docker run -d \
+                        --name infisical \
+                        -p 8000:8080 \
+                        --network ${COMPOSE_NETWORK} \
+                        -e DB_CONNECTION_URI="postgresql://postgres:${DB_PASS}@${NEW_CONTAINER}:5432/infisical" \
+                        -e REDIS_URL="redis://infisical-redis:6379" \
+                        -e AUTH_SECRET="${AUTH_SECRET}" \
+                        -e ENCRYPTION_KEY="${ENC_KEY}" \
+                        infisical/infisical:latest
 
-                    echo "App container recreated ✅"
+                    echo "App container started ✅"
                     '''
                 }
             }
