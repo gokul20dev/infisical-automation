@@ -215,17 +215,26 @@ EOF
         stage('Smoke Test') {
             steps {
                 sh '''
-                echo "Waiting for app to come back on port 8000..."
-                for i in $(seq 1 20); do
+                echo "Giving infisical 20s to run DB migrations..."
+                sleep 20
+
+                echo "Waiting for app on port 8000 (up to 3 minutes)..."
+                for i in $(seq 1 36); do
                     STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/status || true)
-                    echo "  HTTP $STATUS (attempt $i)"
+                    echo "  HTTP $STATUS (attempt $i/36)"
                     [ "$STATUS" = "200" ] && break
                     sleep 5
                 done
 
                 STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/status || true)
-                [ "$STATUS" = "200" ] || \
-                    { echo "❌ App not responding after switch!"; exit 1; }
+                if [ "$STATUS" != "200" ]; then
+                    echo "❌ App not responding after switch! Dumping logs for diagnosis..."
+                    echo "--- docker ps ---"
+                    docker ps -a --filter name=infisical
+                    echo "--- infisical container logs (last 50 lines) ---"
+                    docker logs --tail 50 infisical || true
+                    exit 1
+                fi
 
                 echo "App is live on port 8000 ✅"
                 '''
