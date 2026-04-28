@@ -53,9 +53,10 @@ EOF
                 # Extract hostname from DB_CONNECTION_URI env var of infisical container
                 # URI format: postgresql://user:pass@HOSTNAME:5432/db
                 ACTIVE_DB=$(docker inspect infisical \
-                    --format "{{range .Config.Env}}{{println .}}{{end}}" \
-                    | grep "^DB_CONNECTION_URI=" \
-                    | sed "s|.*@\([^:]*\):.*|\1|")
+                    --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                    | grep '^DB_CONNECTION_URI=' \
+                    | awk -F'@' '{print $2}' \
+                    | awk -F':' '{print $1}')
 
                 if [ -z "$ACTIVE_DB" ]; then
                     echo "Could not detect active DB — falling back to ${OLD_CONTAINER}"
