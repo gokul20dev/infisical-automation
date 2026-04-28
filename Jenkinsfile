@@ -46,7 +46,7 @@ EOF
             steps {
                 sh '''
                 echo "Starting docker-compose (old stack)..."
-                docker compose up -d
+                docker compose up -d --no-recreate
 
                 echo "Waiting for OLD DB to be ready..."
                 for i in $(seq 1 30); do
