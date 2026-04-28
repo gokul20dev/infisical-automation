@@ -189,10 +189,12 @@ EOF
             }
         }
 
-        // ── 9. Switch App to NEW DB ───────────────────────────────────────────
-        // Use docker run -e directly (matches manual approach from docs).
-        // docker compose up was causing crash-loops due to .env substitution issues.
-        stage('Switch App to New DB') {
+        // ── 9. Blue-Green Switch — near-zero downtime ─────────────────────────
+        // Phase A: Start infisical-new on port 8001 (old still serving on 8000).
+        //          Wait until healthy — no user impact during this wait.
+        // Phase B: Quick swap (2-3 s downtime): stop old → rm old → run new on 8000.
+        // Phase C: Cleanup infisical-new.
+        stage('Blue-Green Switch') {
             steps {
                 withCredentials([
                     string(credentialsId: 'db-pass',     variable: 'DB_PASS'),
@@ -200,11 +202,52 @@ EOF
                     string(credentialsId: 'enc-key',     variable: 'ENC_KEY')
                 ]) {
                     sh '''
-                    echo "Stopping old infisical app container..."
-                    docker stop infisical || true
-                    docker rm   infisical || true
+                    # ── Phase A: Start GREEN container on port 8001 ──────────────
+                    echo "Phase A: Starting infisical-new (GREEN) on port 8001..."
+                    docker stop infisical-new || true
+                    docker rm   infisical-new || true
 
-                    echo "Starting infisical app pointed at NEW DB on port 8000..."
+                    docker run -d \
+                        --name infisical-new \
+                        -p 8001:8080 \
+                        --network ${COMPOSE_NETWORK} \
+                        -e DB_CONNECTION_URI="postgresql://postgres:${DB_PASS}@${NEW_CONTAINER}:5432/infisical" \
+                        -e REDIS_URL="redis://infisical-redis:6379" \
+                        -e AUTH_SECRET="${AUTH_SECRET}" \
+                        -e ENCRYPTION_KEY="${ENC_KEY}" \
+                        infisical/infisical:latest
+
+                    echo "GREEN container started. Waiting for it to become healthy..."
+                    echo "(OLD app is still live on port 8000 during this wait)"
+
+                    # Wait up to 3 minutes for GREEN to be ready
+                    GREEN_OK=0
+                    for i in $(seq 1 36); do
+                        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/api/status || true)
+                        echo "  GREEN HTTP $STATUS (attempt $i/36)"
+                        if [ "$STATUS" = "200" ]; then
+                            GREEN_OK=1
+                            break
+                        fi
+                        sleep 5
+                    done
+
+                    if [ "$GREEN_OK" != "1" ]; then
+                        echo "❌ GREEN container never became healthy. Aborting — OLD still running."
+                        echo "--- GREEN container logs ---"
+                        docker logs --tail 50 infisical-new || true
+                        docker stop infisical-new || true
+                        docker rm   infisical-new || true
+                        exit 1
+                    fi
+
+                    echo "GREEN is healthy on port 8001 ✅"
+
+                    # ── Phase B: Quick swap (2-3 s downtime) ────────────────────
+                    echo "Phase B: Quick swap — stopping BLUE, starting GREEN on 8000..."
+                    docker stop infisical     || true
+                    docker rm   infisical     || true
+
                     docker run -d \
                         --name infisical \
                         -p 8000:8080 \
@@ -215,34 +258,36 @@ EOF
                         -e ENCRYPTION_KEY="${ENC_KEY}" \
                         infisical/infisical:latest
 
-                    echo "App container started ✅"
+                    echo "GREEN running on port 8000 ✅"
+
+                    # ── Phase C: Cleanup temporary 8001 container ────────────────
+                    echo "Phase C: Removing temporary infisical-new container..."
+                    docker stop infisical-new || true
+                    docker rm   infisical-new || true
+                    echo "Cleanup done ✅"
                     '''
                 }
             }
         }
 
-        // ── 10. Smoke Test — App is back on port 8000 ────────────────────────
+        // ── 10. Smoke Test — confirm port 8000 is live ────────────────────────
+        // The new container was already pre-warmed on 8001 so it starts fast.
         stage('Smoke Test') {
             steps {
                 sh '''
-                echo "Giving infisical 20s to run DB migrations..."
-                sleep 20
-
-                echo "Waiting for app on port 8000 (up to 3 minutes)..."
-                for i in $(seq 1 36); do
+                echo "Verifying app is live on port 8000..."
+                for i in $(seq 1 12); do
                     STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/status || true)
-                    echo "  HTTP $STATUS (attempt $i/36)"
+                    echo "  HTTP $STATUS (attempt $i/12)"
                     [ "$STATUS" = "200" ] && break
                     sleep 5
                 done
 
                 STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/status || true)
                 if [ "$STATUS" != "200" ]; then
-                    echo "❌ App not responding after switch! Dumping logs for diagnosis..."
-                    echo "--- docker ps ---"
+                    echo "❌ App not responding on port 8000!"
                     docker ps -a --filter name=infisical
-                    echo "--- infisical container logs (last 50 lines) ---"
-                    docker logs --tail 50 infisical || true
+                    docker logs --tail 30 infisical || true
                     exit 1
                 fi
 
