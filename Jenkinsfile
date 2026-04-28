@@ -41,12 +41,20 @@ EOF
             }
         }
 
-        // ── 3. Ensure OLD stack is running ───────────────────────────────────
-        stage('Ensure Compose Running') {
+        // ── 3. Verify OLD stack is running ───────────────────────────────────
+        // Containers were started via docker run (not compose), so we must NOT
+        // call "docker compose up" — it would conflict on the existing names.
+        // We simply verify the old DB container is up and accepting connections.
+        stage('Verify Old Stack Running') {
             steps {
                 sh '''
-                echo "Starting docker-compose (old stack)..."
-                docker compose up -d --no-recreate
+                echo "Verifying OLD stack is already running..."
+
+                # Confirm the container exists and is running
+                docker inspect --format "{{.State.Running}}" ${OLD_CONTAINER} | grep -q "true" || \
+                    { echo "❌ ${OLD_CONTAINER} is not running! Start the old stack first."; exit 1; }
+
+                echo "Container ${OLD_CONTAINER} is running ✅"
 
                 echo "Waiting for OLD DB to be ready..."
                 for i in $(seq 1 30); do
